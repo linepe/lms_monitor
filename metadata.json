@@ -1,0 +1,18 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "linepe"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Shows if a model is loaded in LMS",
+        "Icon": "utilities-terminal",
+        "Id": "lms-status",
+        "License": "GPL-3.0+",
+        "Name": "LMS Model Status",
+        "Website": "https://github.com/linepe/lms-monitor"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
