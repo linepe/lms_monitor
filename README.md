@@ -41,7 +41,7 @@ Then add it to your panel via **Add Widgets → LMS Model Status**.
 The path to the `lms` executable is currently hardcoded in `contents/ui/main.qml`:
 
 ```qml
-readonly property string lmsExecutable: "/home/linepe/.lmstudio/bin/lms"
+readonly property string lmsExecutable: "~/.lmstudio/bin/lms"
 ```
 
 Update this to match your own install path if it differs.
