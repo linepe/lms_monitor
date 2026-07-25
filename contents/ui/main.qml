@@ -14,6 +14,8 @@ PlasmoidItem {
     property bool modelLoaded: false
     property string statusText: "Checking..."
     property bool checkInFlight: false
+    property bool unloadInProgress: false
+    property string currentCommand: ""
     property string rawOutput: ""
 
     Plasma5Support.DataSource {
@@ -22,11 +24,28 @@ PlasmoidItem {
         connectedSources: []
 
         onNewData: function(sourceName, data) {
-            root.checkInFlight = false;
             disconnectSource(sourceName); // one-shot per run
 
             var exitCode = data["exit code"];
             var stdout = data["stdout"] ? data["stdout"].toString() : "";
+
+            if (root.currentCommand === "unload") {
+                root.unloadInProgress = false;
+                if (exitCode !== 0) {
+                    console.log("[LMS Unload] ERROR: exit=" + exitCode);
+                    root.statusText = "Unload Failed";
+                } else {
+                    console.log("[LMS Unload] OK");
+                    root.modelLoaded = false;
+                    root.statusText = "Model Unloaded";
+                }
+                root.currentCommand = "";
+                return;
+            }
+
+            // status check (default path)
+            root.checkInFlight = false;
+            root.currentCommand = "";
 
             if (exitCode !== 0 || !stdout || stdout.trim() === "") {
                 console.log("[LMS Status] ERROR: exit=" + exitCode + " stdout empty=" + (!stdout));
@@ -51,7 +70,15 @@ PlasmoidItem {
     function runStatusCheck() {
         if (root.checkInFlight) return;
         root.checkInFlight = true;
+        root.currentCommand = "status";
         executable.connectSource(root.lmsExecutable + " status");
+    }
+
+    function runUnload() {
+        if (root.unloadInProgress) return;
+        root.unloadInProgress = true;
+        root.currentCommand = "unload";
+        executable.connectSource(root.lmsExecutable + " unload");
     }
 
     Timer {
@@ -208,10 +235,23 @@ PlasmoidItem {
             }
         }
 
-        PlasmaComponents.Button {
-            text: "Check Now"
-            enabled: !root.checkInFlight
-            onClicked: root.runStatusCheck()
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: PlasmaCore.Units.smallSpacing
+
+            PlasmaComponents.Button {
+                Layout.fillWidth: true
+                text: "Check Now"
+                enabled: !root.checkInFlight && !root.unloadInProgress
+                onClicked: root.runStatusCheck()
+            }
+
+            PlasmaComponents.Button {
+                Layout.fillWidth: true
+                text: "Unload"
+                enabled: !root.unloadInProgress && !root.checkInFlight
+                onClicked: root.runUnload()
+            }
         }
     }
 }
