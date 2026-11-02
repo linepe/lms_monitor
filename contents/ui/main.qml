@@ -1,22 +1,67 @@
 import QtQuick
 import QtQuick.Layouts
-import org.kde.plasma.core as PlasmaCore
+import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as Plasma5Support
 
 PlasmoidItem {
     id: root
 
-    readonly property string lmsExecutable: "~/.lmstudio/bin/lms"
-    readonly property int pollIntervalMs: 5000
+    readonly property string baseUrl: (Plasmoid.configuration.lmsUrl || "http://127.0.0.1:1234").replace(/\/+$/, "")
+    readonly property string apiKey: Plasmoid.configuration.lmsApiKey || ""
+    readonly property int intervalMs: Math.max(5, Plasmoid.configuration.refreshInterval) * 1000
 
-    property bool modelLoaded: false
-    property string statusText: "Checking..."
+    // [{ name: string, instances: [{ id: string }] }]
+    property var models: []
+    property bool reachable: false
     property bool checkInFlight: false
-    property bool unloadInProgress: false
-    property string currentCommand: ""
-    property string rawOutput: ""
+    property string errorText: ""
+
+    readonly property var loadedModels: models.filter(function(m) { return m.instances.length > 0 })
+    readonly property int loadedCount: loadedModels.length
+
+    Plasmoid.hasConfigurationInterface: true
+
+    toolTipMainText: "LM Studio"
+    toolTipSubText: !reachable ? (errorText || i18n("Unreachable"))
+                  : loadedCount === 0 ? i18n("No model loaded")
+                  : i18np("%1 model loaded", "%1 models loaded", loadedCount)
+
+    // ---- helpers ----
+    function sq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+    function curlCmd(extraArgs, path) {
+        var cmd = "curl -sf -m 10";
+        if (root.apiKey !== "")
+            cmd += " -H " + sq("Authorization: Bearer " + root.apiKey);
+        return cmd + " " + extraArgs + " " + sq(root.baseUrl + path);
+    }
+
+    function refresh() {
+        if (checkInFlight) return;
+        checkInFlight = true;
+        executable.connectSource(curlCmd("", "/api/v1/models"));
+    }
+
+    function unload(instanceId) {
+        var body = JSON.stringify({ instance_id: instanceId });
+        executable.connectSource(curlCmd("-X POST -H 'Content-Type: application/json' -d " + sq(body),
+                                         "/api/v1/models/unload"));
+    }
+
+    function parseModels(text) {
+        var data = JSON.parse(text);
+        if (data && data.error) throw new Error(data.error.message || String(data.error));
+        var list = Array.isArray(data) ? data : (data.models || data.data || []);
+        return list.map(function(m) {
+            var insts = (m.loaded_instances || []).map(function(i) {
+                return { id: i.instance_id || i.id || i.model_id || "" };
+            }).filter(function(i) { return i.id !== ""; });
+            return { name: m.display_name || m.key || m.model_id || m.id || "?", instances: insts };
+        });
+    }
 
     Plasma5Support.DataSource {
         id: executable
@@ -24,83 +69,73 @@ PlasmoidItem {
         connectedSources: []
 
         onNewData: function(sourceName, data) {
-            disconnectSource(sourceName); // one-shot per run
-
+            disconnectSource(sourceName);
             var exitCode = data["exit code"];
-            var stdout = data["stdout"] ? data["stdout"].toString() : "";
+            var stdout = data["stdout"] ? data["stdout"].toString().trim() : "";
+            var isUnload = sourceName.indexOf("/api/v1/models/unload") !== -1;
 
-            if (root.currentCommand === "unload") {
-                root.unloadInProgress = false;
-                if (exitCode !== 0) {
-                    console.log("[LMS Unload] ERROR: exit=" + exitCode);
-                    root.statusText = "Unload Failed";
-                } else {
-                    console.log("[LMS Unload] OK");
-                    root.modelLoaded = false;
-                    root.statusText = "Model Unloaded";
+            if (isUnload) {
+                var failed = exitCode !== 0;
+                if (!failed && stdout !== "") {
+                    try { failed = !!JSON.parse(stdout).error; } catch (e) { /* non-JSON ok */ }
                 }
-                root.currentCommand = "";
+                if (failed) root.errorText = i18n("Unload failed");
+                root.checkInFlight = false;
+                root.refresh();
                 return;
             }
 
-            // status check (default path)
             root.checkInFlight = false;
-            root.currentCommand = "";
-
-            if (exitCode !== 0 || !stdout || stdout.trim() === "") {
-                console.log("[LMS Status] ERROR: exit=" + exitCode + " stdout empty=" + (!stdout));
-                root.modelLoaded = false;
-                root.statusText = "Error";
-                root.rawOutput = "";
+            if (exitCode !== 0 || stdout === "") {
+                root.reachable = false;
+                root.models = [];
+                root.errorText = i18n("Unreachable (curl exit %1)", exitCode);
                 return;
             }
-
-            root.rawOutput = stdout;
-
-            if (stdout.indexOf("Loaded Models") !== -1) {
-                root.modelLoaded = true;
-                root.statusText = "Model Loaded";
-            } else {
-                root.modelLoaded = false;
-                root.statusText = "No Model";
+            try {
+                root.models = root.parseModels(stdout);
+                root.reachable = true;
+                root.errorText = "";
+            } catch (e) {
+                root.reachable = false;
+                root.models = [];
+                root.errorText = i18n("Bad response: %1", e.message);
             }
         }
     }
 
-    function runStatusCheck() {
-        if (root.checkInFlight) return;
-        root.checkInFlight = true;
-        root.currentCommand = "status";
-        executable.connectSource(root.lmsExecutable + " status");
-    }
-
-    function runUnload() {
-        if (root.unloadInProgress) return;
-        root.unloadInProgress = true;
-        root.currentCommand = "unload";
-        executable.connectSource(root.lmsExecutable + " unload");
-    }
-
     Timer {
-        interval: root.pollIntervalMs
+        interval: root.intervalMs
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.runStatusCheck()
+        onTriggered: root.refresh()
     }
 
-    toolTipMainText: "LM Studio"
-    toolTipSubText: root.statusText
+    Connections {
+        target: Plasmoid.configuration
+        function onLmsUrlChanged() { root.refresh(); }
+        function onLmsApiKeyChanged() { root.refresh(); }
+    }
 
-    // ---- Compact panel representation: minimalist robot glyph ----
+    // ---- compact: robot glyph, filled when something is loaded ----
     compactRepresentation: Canvas {
         id: robotCanvas
-        Layout.preferredWidth: PlasmaCore.Units.iconSizes.smallMedium
-        Layout.preferredHeight: PlasmaCore.Units.iconSizes.smallMedium
+        // keep the slot square: follow the panel's thickness, never stretch
+        readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
+        Layout.minimumWidth: vertical ? 0 : height
+        Layout.minimumHeight: vertical ? width : 0
+        Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+        Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
 
-        readonly property color glyphColor: "#FFFFFF"
+        readonly property color glyphColor: Kirigami.Theme.textColor
+        readonly property bool active: root.reachable && root.loadedCount > 0
+        onGlyphColorChanged: requestPaint()
+        onActiveChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
 
-        function drawRoundedRectPath(ctx, x, y, w, h, r) {
+        function roundedRect(ctx, x, y, w, h, r) {
             ctx.beginPath();
             ctx.moveTo(x + r, y);
             ctx.lineTo(x + w - r, y);
@@ -118,69 +153,32 @@ PlasmoidItem {
             var ctx = getContext("2d");
             ctx.reset();
             ctx.clearRect(0, 0, width, height);
-
-            // antenna knob
-            var knobR = 2;
-            var knobCx = width / 2;
-            var knobCy = height * 0.05 + knobR;
+            // draw in a centered square so the glyph keeps its proportions
+            var side = Math.min(width, height);
+            ctx.translate((width - side) / 2, (height - side) / 2);
+            ctx.globalAlpha = root.reachable ? 1.0 : 0.4;
             ctx.fillStyle = glyphColor;
+            ctx.strokeStyle = glyphColor;
+
+            var knobR = Math.max(1.5, side * 0.07), cx = side / 2, knobCy = side * 0.04 + knobR;
             ctx.beginPath();
-            ctx.arc(knobCx, knobCy, knobR, 0, Math.PI * 2);
+            ctx.arc(cx, knobCy, knobR, 0, Math.PI * 2);
             ctx.fill();
+            ctx.fillRect(cx - 1, knobCy + knobR, 2, side * 0.12);
 
-            // antenna stalk
-            var stalkY = knobCy + knobR;
-            var stalkH = height * 0.18;
-            ctx.fillRect(width / 2 - 1, stalkY, 2, stalkH);
+            var headW = side * 0.8, headH = side * 0.62;
+            var headX = (side - headW) / 2, headY = side * 0.3;
+            ctx.lineWidth = Math.max(1.5, side * 0.09);
+            roundedRect(ctx, headX, headY, headW, headH, headH * 0.45);
+            if (active) { ctx.fill(); } else { ctx.stroke(); }
 
-            // head
-            var headW = width * 0.72;
-            var headH = height * 0.6;
-            var headX = (width - headW) / 2;
-            var headY = height * 0.32;
-            var headR = headW * 0.2;
-
-            drawRoundedRectPath(ctx, headX, headY, headW, headH, headR);
-            if (root.modelLoaded) {
-                ctx.fillStyle = glyphColor;
-                ctx.fill();
-            } else {
-                ctx.strokeStyle = glyphColor;
-                ctx.lineWidth = 2;
-                ctx.stroke();
-            }
-
-            // eyes
-            var eyeR = 1.5;
-            var eyeY = headY + headH / 2;
-            var eyeLeftX = headX + headW * 0.22 + eyeR;
-            var eyeRightX = headX + headW * 0.78 - eyeR;
-
-            if (root.modelLoaded) {
-                // real cutout — erases pixels rather than painting over them
-                ctx.save();
-                ctx.globalCompositeOperation = "destination-out";
-                ctx.beginPath();
-                ctx.arc(eyeLeftX, eyeY, eyeR, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.beginPath();
-                ctx.arc(eyeRightX, eyeY, eyeR, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
-            } else {
-                ctx.fillStyle = glyphColor;
-                ctx.beginPath();
-                ctx.arc(eyeLeftX, eyeY, eyeR, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.beginPath();
-                ctx.arc(eyeRightX, eyeY, eyeR, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-
-        Connections {
-            target: root
-            function onModelLoadedChanged() { robotCanvas.requestPaint(); }
+            var eyeR = Math.max(1.5, side * 0.07), eyeY = headY + headH / 2;
+            var ex1 = headX + headW * 0.3, ex2 = headX + headW * 0.7;
+            ctx.save();
+            if (active) ctx.globalCompositeOperation = "destination-out";
+            ctx.beginPath(); ctx.arc(ex1, eyeY, eyeR, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(ex2, eyeY, eyeR, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
         }
 
         Component.onCompleted: requestPaint()
@@ -191,66 +189,80 @@ PlasmoidItem {
         }
     }
 
-    // ---- Expanded popup representation ----
+    // ---- popup ----
     fullRepresentation: ColumnLayout {
-        Layout.preferredWidth: PlasmaCore.Units.gridUnit * 22
-        Layout.preferredHeight: PlasmaCore.Units.gridUnit * 14
-        spacing: PlasmaCore.Units.smallSpacing
-
-        PlasmaComponents.Label {
-            text: "LM Studio Status"
-            font.bold: true
-        }
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 22
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 14
+        spacing: Kirigami.Units.smallSpacing
 
         RowLayout {
-            Rectangle {
-                Layout.preferredWidth: 16
-                Layout.preferredHeight: 16
-                radius: 4
-                color: root.modelLoaded ? "#4CAF50" : "#F44336"
+            Layout.fillWidth: true
+            Kirigami.Heading {
+                level: 4
+                text: "LM Studio"
+                Layout.fillWidth: true
             }
-            PlasmaComponents.Label {
-                text: root.statusText
+            PlasmaComponents.ToolButton {
+                icon.name: "view-refresh"
+                enabled: !root.checkInFlight
+                onClicked: root.refresh()
+                PlasmaComponents.ToolTip { text: i18n("Refresh") }
             }
         }
 
         PlasmaComponents.Label {
-            text: "Details:"
-            font.bold: true
-            Layout.topMargin: PlasmaCore.Units.smallSpacing
-            visible: root.rawOutput !== ""
+            Layout.fillWidth: true
+            visible: root.errorText !== ""
+            text: root.errorText
+            color: Kirigami.Theme.negativeTextColor
+            wrapMode: Text.Wrap
         }
 
-        PlasmaComponents.ScrollView {
+        PlasmaComponents.Label {
+            Layout.fillWidth: true
+            visible: root.reachable && root.loadedCount === 0
+            text: i18n("No model loaded")
+            opacity: 0.7
+        }
+
+        ListView {
+            id: list
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: root.rawOutput !== ""
+            clip: true
+            visible: root.reachable
+            model: root.loadedModels
+            spacing: Kirigami.Units.smallSpacing
 
-            PlasmaComponents.Label {
-                width: parent.width
-                text: root.rawOutput
-                wrapMode: Text.Wrap
-                font.family: "monospace"
-                font.pixelSize: 11
-            }
-        }
+            delegate: ColumnLayout {
+                width: list.width
+                required property var modelData
+                spacing: 0
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: PlasmaCore.Units.smallSpacing
-
-            PlasmaComponents.Button {
-                Layout.fillWidth: true
-                text: "Check Now"
-                enabled: !root.checkInFlight && !root.unloadInProgress
-                onClicked: root.runStatusCheck()
-            }
-
-            PlasmaComponents.Button {
-                Layout.fillWidth: true
-                text: "Unload"
-                enabled: !root.unloadInProgress && !root.checkInFlight
-                onClicked: root.runUnload()
+                PlasmaComponents.Label {
+                    text: modelData.name
+                    font.bold: true
+                    elide: Text.ElideMiddle
+                    Layout.fillWidth: true
+                }
+                Repeater {
+                    model: modelData.instances
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        PlasmaComponents.Label {
+                            text: modelData.id
+                            elide: Text.ElideMiddle
+                            opacity: 0.7
+                            Layout.fillWidth: true
+                        }
+                        PlasmaComponents.Button {
+                            text: i18n("Unload")
+                            icon.name: "media-eject"
+                            onClicked: root.unload(modelData.id)
+                        }
+                    }
+                }
             }
         }
     }

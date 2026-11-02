@@ -1,47 +1,41 @@
 # LMS Model Status
 
-A minimal KDE Plasma 6 panel widget that shows whether [LM Studio](https://lmstudio.ai/) currently has a model loaded, at a glance.
+KDE Plasma 6 widget that shows which models [LM Studio](https://lmstudio.ai/) has loaded and lets you unload them. It talks to LM Studio's REST API (no `lms` CLI needed).
 
 ![LMS Model Status icon](./screenshot.png)
 
-The icon is a small robot glyph:
-
-- **Filled head** → a model is currently loaded
-- **Outline head** → no model loaded
-- Click the icon to expand a popup with the full `lms status` output and a manual "Check Now" button
+- **Filled head** → at least one model is loaded
+- **Outline head** → nothing loaded
+- **Dimmed** → server unreachable
+- Click to open the popup: loaded models, per-instance **Unload** button, refresh button
 
 ## How it works
 
-The widget polls `lms status` (the LM Studio CLI) every 5 seconds via Plasma's `Plasma5Support.DataSource` executable engine, parses the output for a loaded-model indicator, and updates the icon accordingly.
+Plasma has no HTTP data engine, so the widget runs `curl` through the `executable` engine (`Plasma5Support.DataSource`):
+
+- `GET {url}/api/v1/models` on a timer → models with non-empty `loaded_instances` are shown
+- `POST {url}/api/v1/models/unload` with `{"instance_id": "..."}`, then an immediate refresh
+
+curl failures (`-f`) and `"error"` bodies (LM Studio can answer HTTP 200 with an error) are shown as errors.
 
 ## Requirements
 
-- KDE Plasma 6
-- [LM Studio](https://lmstudio.ai/) with the `lms` CLI installed
-- The `plasma5support` package (usually already installed as a Plasma dependency)
+- KDE Plasma 6, `curl`
+- LM Studio with the local server enabled
 
 ## Installation
 
 ```bash
 kpackagetool6 -t Plasma/Applet -i /path/to/lms_monitor
-```
-
-To update after making changes:
-
-```bash
+# update:
 kpackagetool6 -t Plasma/Applet -u /path/to/lms_monitor
-kquitapp6 plasmashell
-kstart plasmashell
+systemctl --user restart plasma-plasmashell
 ```
 
-Then add it to your panel via **Add Widgets → LMS Model Status**.
+Add it via **Add Widgets → LMS Model Status**.
 
 ## Configuration
 
-The path to the `lms` executable is currently hardcoded in `contents/ui/main.qml`:
+Right-click → **Configure**: base URL (default `http://127.0.0.1:1234`), optional API key, refresh interval (min 5 s).
 
-```qml
-readonly property string lmsExecutable: "~/.lmstudio/bin/lms"
-```
-
-Update this to match your own install path if it differs.
+**Security:** the key is stored in the per-applet Plasma config (`~/.config/plasma-org.kde.plasma.desktop-appletsrc`), never in the repo (default is empty). It is passed to `curl` on the command line, so it is briefly visible in the process list to local users. Fine for a single-user machine.

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <group name="General">
+    <entry name="lmsUrl" type="String">
+      <default>http://127.0.0.1:1234</default>
+    </entry>
+    <entry name="lmsApiKey" type="String">
+      <default></default>
+    </entry>
+    <entry name="refreshInterval" type="Int">
+      <default>30</default>
+      <min>5</min>
+    </entry>
+  </group>
+</kcfg>

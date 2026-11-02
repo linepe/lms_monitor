@@ -1,0 +1,10 @@
+# build artifacts
+lms_monitor.zip
+*.zip
+
+# editor / OS noise
+.*
+!.gitignore
+!.git
+*.swp
+.DS_Store
