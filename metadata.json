@@ -7,7 +7,7 @@
             }
         ],
         "Category": "System Information",
-        "Description": "Shows if a model is loaded in LMS",
+        "Description": "Shows and unloads models loaded in LM Studio via its REST API",
         "Icon": "utilities-terminal",
         "Id": "lms-status",
         "License": "GPL-3.0+",
